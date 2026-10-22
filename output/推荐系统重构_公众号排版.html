@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>从 0 到 1：我们如何用 3 个月重构了百万级用户的推荐系统</title>
+</head>
+<body style="margin:0;padding:0;background:#EDEFF3;">
+
+<section style="max-width:680px;margin:0 auto;padding:24px 16px 40px 16px;background:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;font-size:16px;line-height:1.8;color:#3A3F47;letter-spacing:0.3px;word-break:break-word;text-align:left;">
+
+  <!-- ===== 标题区 ===== -->
+  <p style="margin:0 0 10px 0;font-size:12px;letter-spacing:2px;color:#1E6FD9;font-weight:700;">TECH&nbsp;·&nbsp;ARCHITECTURE</p>
+
+  <h1 style="margin:0 0 14px 0;font-size:24px;line-height:1.45;font-weight:700;color:#16233A;letter-spacing:0.2px;">从 0 到 1：我们如何用 3 个月重构了百万级用户的推荐系统</h1>
+
+  <p style="margin:0 0 20px 0;font-size:13px;color:#8A94A6;">推荐系统团队&nbsp;&nbsp;|&nbsp;&nbsp;深度复盘&nbsp;&nbsp;|&nbsp;&nbsp;约 12 分钟</p>
+
+  <section style="height:1px;background:#E8EBF0;margin:0 0 24px 0;font-size:0;line-height:0;">&nbsp;</section>
+
+  <!-- ===== 导读 ===== -->
+  <section style="background:#F5F8FE;border-left:3px solid #1E6FD9;border-radius:0 8px 8px 0;padding:16px 18px;margin:0 0 24px 0;">
+    <p style="margin:0;font-size:15px;line-height:1.85;color:#44506A;">
+      <span style="color:#1E6FD9;font-weight:700;">导读&nbsp;</span>去年 Q3，我们把运行了 4 年的推荐系统彻底重构。从协同过滤到「召回—粗排—精排—重排」四阶段架构，点击率从 <span style="color:#E5484D;font-weight:700;">2.8%</span> 提升到 <span style="color:#E5484D;font-weight:700;">8.5%</span>。这篇文章把完整的实战经验、架构决策和踩过的坑一次讲清楚。
+    </p>
+  </section>
+
+  <!-- ===== 数据速览 ===== -->
+  <table style="width:100%;border-collapse:collapse;margin:0 0 32px 0;table-layout:fixed;" cellspacing="0" cellpadding="0">
+    <tbody>
+      <tr>
+        <td style="width:33.33%;padding:0 4px 0 0;vertical-align:top;">
+          <section style="background:#FDF3F3;border-radius:10px;padding:14px 10px;text-align:center;">
+            <p style="margin:0 0 4px 0;font-size:26px;font-weight:700;color:#E5484D;line-height:1.2;letter-spacing:0;">8.5%</p>
+            <p style="margin:0;font-size:12px;color:#8A6A6A;line-height:1.5;">推荐点击率<br>（原 2.8%）</p>
+          </section>
+        </td>
+        <td style="width:33.33%;padding:0 4px;vertical-align:top;">
+          <section style="background:#F5F8FE;border-radius:10px;padding:14px 10px;text-align:center;">
+            <p style="margin:0 0 4px 0;font-size:26px;font-weight:700;color:#1E6FD9;line-height:1.2;letter-spacing:0;">+40%</p>
+            <p style="margin:0;font-size:12px;color:#6B7A94;line-height:1.5;">实时特征带来的<br>CTR 增益</p>
+          </section>
+        </td>
+        <td style="width:33.33%;padding:0 0 0 4px;vertical-align:top;">
+          <section style="background:#F5F8FE;border-radius:10px;padding:14px 10px;text-align:center;">
+            <p style="margin:0 0 4px 0;font-size:26px;font-weight:700;color:#1E6FD9;line-height:1.2;letter-spacing:0;">2&nbsp;天</p>
+            <p style="margin:0;font-size:12px;color:#6B7A94;line-height:1.5;">模型迭代周期<br>（原 2 周）</p>
+          </section>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ===== 一、为什么要重构 ===== -->
+  <h2 style="margin:0 0 18px 0;padding:0 0 0 12px;border-left:4px solid #1E6FD9;font-size:20px;line-height:1.4;font-weight:700;color:#16233A;">一、为什么要重构</h2>
+
+  <p style="margin:0 0 18px 0;font-size:16px;line-height:1.85;color:#3A3F47;">老系统跑了四年，扛住了百万级用户，但它的问题不在性能，而在<span style="color:#1E6FD9;font-weight:700;">工程效率</span>。以下三个致命问题，任何一个都足以让我们下决心推倒重来。</p>
+
+  <section style="border:1px solid #E9EDF4;border-radius:10px;padding:16px 18px;margin:0 0 12px 0;background:#FFFFFF;">
+    <p style="margin:0 0 8px 0;font-size:16px;font-weight:700;color:#16233A;line-height:1.5;">
+      <span style="display:inline-block;background:#E5484D;color:#FFFFFF;font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;margin-right:8px;vertical-align:2px;">01</span>特征工程全靠手工
+    </p>
+    <p style="margin:0;font-size:15px;line-height:1.8;color:#5A657A;">每加一个新特征要改 3 个模块的代码，上线周期平均 <span style="color:#E5484D;font-weight:700;">两周</span>。想快速验证一个新信号？排队去吧。</p>
+  </section>
+
+  <section style="border:1px solid #E9EDF4;border-radius:10px;padding:16px 18px;margin:0 0 12px 0;background:#FFFFFF;">
+    <p style="margin:0 0 8px 0;font-size:16px;font-weight:700;color:#16233A;line-height:1.5;">
+      <span style="display:inline-block;background:#E5484D;color:#FFFFFF;font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;margin-right:8px;vertical-align:2px;">02</span>模型只支持批量更新
+    </p>
+    <p style="margin:0;font-size:15px;line-height:1.8;color:#5A657A;">每天凌晨跑一次全量计算。用户上午刚搜了「露营装备」，推荐流还在推昨天的「办公椅」——对实时行为完全无感。</p>
+  </section>
+
+  <section style="border:1px solid #E9EDF4;border-radius:10px;padding:16px 18px;margin:0 0 32px 0;background:#FFFFFF;">
+    <p style="margin:0 0 8px 0;font-size:16px;font-weight:700;color:#16233A;line-height:1.5;">
+      <span style="display:inline-block;background:#E5484D;color:#FFFFFF;font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;margin-right:8px;vertical-align:2px;">03</span>没有 A/B 实验框架
+    </p>
+    <p style="margin:0;font-size:15px;line-height:1.8;color:#5A657A;">每次改模型都是全量上线。效果好皆大欢喜，效果差只能回滚。数据驱动？不存在的。</p>
+  </section>
+
+  <!-- ===== 二、新架构 ===== -->
+  <h2 style="margin:0 0 18px 0;padding:0 0 0 12px;border-left:4px solid #1E6FD9;font-size:20px;line-height:1.4;font-weight:700;color:#16233A;">二、新架构：四阶段漏斗</h2>
+
+  <p style="margin:0 0 18px 0;font-size:16px;line-height:1.85;color:#3A3F47;">我们采用了经典的「召回—粗排—精排—重排」四阶段架构。核心思路是<span style="color:#1E6FD9;font-weight:700;">用便宜的手段快速收敛候选集</span>，把最贵的模型留给最少的候选。</p>
+
+  <!-- 漏斗总览 -->
+  <section style="background:#16233A;border-radius:12px;padding:18px;margin:0 0 20px 0;">
+    <p style="margin:0 0 14px 0;font-size:12px;letter-spacing:1.5px;color:#7E93B8;font-weight:700;">PIPELINE&nbsp;/&nbsp;全链路耗时预算</p>
+    <p style="margin:0 0 8px 0;font-size:14px;color:#C8D4E8;line-height:1.6;">
+      <span style="color:#FFFFFF;font-weight:700;">全库百万级</span>&nbsp;→&nbsp;召回 400 条&nbsp;→&nbsp;粗排 100 条&nbsp;→&nbsp;精排 20 条&nbsp;→&nbsp;重排曝光 10 条
+    </p>
+    <p style="margin:0;font-size:12px;color:#7E93B8;line-height:1.6;">每一层都在压缩候选规模，同时提高打分的精度。</p>
+  </section>
+
+  <!-- 召回层 -->
+  <section style="background:#F7FAFF;border:1px solid #E3EDFB;border-left:4px solid #1E6FD9;border-radius:10px;padding:16px 18px;margin:0 0 12px 0;">
+    <p style="margin:0 0 10px 0;font-size:16px;font-weight:700;color:#1E6FD9;line-height:1.5;">
+      <span style="display:inline-block;background:#1E6FD9;color:#FFFFFF;font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;margin-right:8px;vertical-align:2px;">01</span>召回层
+    </p>
+    <p style="margin:0 0 10px 0;font-size:15px;line-height:1.8;color:#44506A;">多路召回策略并行，三路各召回 200 条，去重后约 <span style="color:#E5484D;font-weight:700;">400 条</span>进入粗排。</p>
+    <p style="margin:0 0 6px 0;font-size:14.5px;line-height:1.8;color:#44506A;"><span style="color:#1E6FD9;font-weight:700;">·</span>&nbsp;协同过滤（CF）：保留作为基线</p>
+    <p style="margin:0 0 6px 0;font-size:14.5px;line-height:1.8;color:#44506A;"><span style="color:#1E6FD9;font-weight:700;">·</span>&nbsp;向量召回：基于 Embedding，用 <span style="font-family:SFMono-Regular,Consolas,Menlo,monospace;font-size:13.5px;background:#EAF1FD;color:#1B4FA8;padding:2px 6px;border-radius:4px;">FAISS</span> 做 ANN 检索</p>
+    <p style="margin:0 0 6px 0;padding-left:18px;font-size:13.5px;line-height:1.7;color:#6B7A94;">索引大小 200GB&nbsp;&nbsp;/&nbsp;&nbsp;检索延迟 P99 &lt; 5ms</p>
+    <p style="margin:0;font-size:14.5px;line-height:1.8;color:#44506A;"><span style="color:#1E6FD9;font-weight:700;">·</span>&nbsp;热度召回：基于时间衰减的热门内容</p>
+  </section>
+
+  <!-- 粗排层 -->
+  <section style="background:#F7FAFF;border:1px solid #E3EDFB;border-left:4px solid #1E6FD9;border-radius:10px;padding:16px 18px;margin:0 0 12px 0;">
+    <p style="margin:0 0 10px 0;font-size:16px;font-weight:700;color:#1E6FD9;line-height:1.5;">
+      <span style="display:inline-block;background:#1E6FD9;color:#FFFFFF;font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;margin-right:8px;vertical-align:2px;">02</span>粗排层
+    </p>
+    <p style="margin:0 0 10px 0;font-size:15px;line-height:1.8;color:#44506A;">用轻量 GBDT 模型做快速打分，特征主要是 item 侧静态特征 + 用户画像特征。</p>
+    <p style="margin:0 0 6px 0;font-size:14.5px;line-height:1.8;color:#44506A;"><span style="color:#1E6FD9;font-weight:700;">·</span>&nbsp;<span style="color:#E5484D;font-weight:700;">300ms</span> 内完成 400 条打分</p>
+    <p style="margin:0;font-size:14.5px;line-height:1.8;color:#44506A;"><span style="color:#1E6FD9;font-weight:700;">·</span>&nbsp;取 Top 100 送入精排</p>
+  </section>
+
+  <!-- 精排层 -->
+  <section style="background:#F7FAFF;border:1px solid #E3EDFB;border-left:4px solid #1E6FD9;border-radius:10px;padding:16px 18px;margin:0 0 12px 0;">
+    <p style="margin:0 0 10px 0;font-size:16px;font-weight:700;color:#1E6FD9;line-height:1.5;">
+      <span style="display:inline-block;background:#1E6FD9;color:#FFFFFF;font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;margin-right:8px;vertical-align:2px;">03</span>精排层（核心）
+    </p>
+    <p style="margin:0 0 12px 0;font-size:15px;line-height:1.8;color:#44506A;">使用 <span style="font-family:SFMono-Regular,Consolas,Menlo,monospace;font-size:13.5px;background:#EAF1FD;color:#1B4FA8;padding:2px 6px;border-radius:4px;">DeepFM</span> 模型，特征分三组：</p>
+
+    <table style="width:100%;border-collapse:collapse;margin:0 0 12px 0;font-size:13.5px;table-layout:fixed;" cellspacing="0" cellpadding="0">
+      <thead>
+        <tr>
+          <th style="width:30%;background:#1E6FD9;color:#FFFFFF;font-weight:600;padding:9px 8px;text-align:left;border:1px solid #1E6FD9;font-size:13.5px;">特征组</th>
+          <th style="background:#1E6FD9;color:#FFFFFF;font-weight:600;padding:9px 8px;text-align:left;border:1px solid #1E6FD9;font-size:13.5px;">具体特征</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="background:#FFFFFF;padding:9px 8px;border:1px solid #DCE5F2;color:#1B4FA8;font-weight:600;line-height:1.6;vertical-align:top;">用户特征</td>
+          <td style="background:#FFFFFF;padding:9px 8px;border:1px solid #DCE5F2;color:#44506A;line-height:1.7;vertical-align:top;">年龄、活跃度、历史行为序列</td>
+        </tr>
+        <tr>
+          <td style="background:#FAFCFF;padding:9px 8px;border:1px solid #DCE5F2;color:#1B4FA8;font-weight:600;line-height:1.6;vertical-align:top;">Item 特征</td>
+          <td style="background:#FAFCFF;padding:9px 8px;border:1px solid #DCE5F2;color:#44506A;line-height:1.7;vertical-align:top;">类目、标签、发布时间、历史 CTR</td>
+        </tr>
+        <tr>
+          <td style="background:#FFFFFF;padding:9px 8px;border:1px solid #DCE5F2;color:#1B4FA8;font-weight:600;line-height:1.6;vertical-align:top;">交叉特征</td>
+          <td style="background:#FFFFFF;padding:9px 8px;border:1px solid #DCE5F2;color:#44506A;line-height:1.7;vertical-align:top;">用户对类目的偏好、时间衰减因子</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p style="margin:0;font-size:14.5px;line-height:1.8;color:#44506A;">在线推理用 TensorFlow Serving，GPU 推理延迟 P99 &lt; <span style="color:#E5484D;font-weight:700;">50ms</span>。</p>
+  </section>
+
+  <!-- 重排层 -->
+  <section style="background:#F7FAFF;border:1px solid #E3EDFB;border-left:4px solid #1E6FD9;border-radius:10px;padding:16px 18px;margin:0 0 32px 0;">
+    <p style="margin:0 0 10px 0;font-size:16px;font-weight:700;color:#1E6FD9;line-height:1.5;">
+      <span style="display:inline-block;background:#1E6FD9;color:#FFFFFF;font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;margin-right:8px;vertical-align:2px;">04</span>重排层
+    </p>
+    <p style="margin:0 0 8px 0;font-size:15px;line-height:1.8;color:#44506A;">做多样性打散和业务规则干预：</p>
+    <p style="margin:0 0 6px 0;font-size:14.5px;line-height:1.8;color:#44506A;"><span style="color:#1E6FD9;font-weight:700;">·</span>&nbsp;同类目内容不能连续出现超过 <span style="color:#E5484D;font-weight:700;">3 条</span></p>
+    <p style="margin:0;font-size:14.5px;line-height:1.8;color:#44506A;"><span style="color:#1E6FD9;font-weight:700;">·</span>&nbsp;付费内容穿插比例不超过 <span style="color:#E5484D;font-weight:700;">20%</span></p>
+  </section>
+
+  <!-- ===== 三、实时特征 ===== -->
+  <h2 style="margin:0 0 18px 0;padding:0 0 0 12px;border-left:4px solid #1E6FD9;font-size:20px;line-height:1.4;font-weight:700;color:#16233A;">三、实时特征：最大的技术突破</h2>
+
+  <p style="margin:0 0 18px 0;font-size:16px;line-height:1.85;color:#3A3F47;">用户的点击、收藏、停留时长等行为，通过 Kafka 实时采集，Flink 做流式特征计算（10 秒窗口），写入 Redis 作为在线特征存储。</p>
+
+  <!-- 流程图 -->
+  <section style="background:#F7FAFF;border:1px solid #E3EDFB;border-radius:12px;padding:18px 14px;margin:0 0 18px 0;">
+    <p style="margin:0 0 14px 0;font-size:12px;letter-spacing:1.5px;color:#8A99B5;font-weight:700;text-align:center;">实时特征链路</p>
+
+    <section style="background:#FFFFFF;border:1px solid #DCE5F2;border-radius:8px;padding:12px;margin:0 0 0 0;">
+      <p style="margin:0 0 3px 0;font-size:15px;font-weight:700;color:#16233A;">Kafka</p>
+      <p style="margin:0;font-size:13px;color:#6B7A94;line-height:1.6;">实时采集点击 / 收藏 / 停留时长等行为流</p>
+    </section>
+
+    <p style="margin:0;text-align:center;font-size:16px;color:#1E6FD9;line-height:2;font-weight:700;">↓</p>
+
+    <section style="background:#FFFFFF;border:1px solid #DCE5F2;border-radius:8px;padding:12px;margin:0;">
+      <p style="margin:0 0 3px 0;font-size:15px;font-weight:700;color:#16233A;">Flink</p>
+      <p style="margin:0;font-size:13px;color:#6B7A94;line-height:1.6;">流式聚合，10 秒滚动窗口计算实时特征</p>
+    </section>
+
+    <p style="margin:0;text-align:center;font-size:16px;color:#1E6FD9;line-height:2;font-weight:700;">↓</p>
+
+    <section style="background:#FFFFFF;border:1px solid #DCE5F2;border-radius:8px;padding:12px;margin:0;">
+      <p style="margin:0 0 3px 0;font-size:15px;font-weight:700;color:#16233A;">Redis</p>
+      <p style="margin:0;font-size:13px;color:#6B7A94;line-height:1.6;">在线特征存储，供精排模型毫秒级读取</p>
+    </section>
+  </section>
+
+  <p style="margin:0 0 18px 0;font-size:16px;line-height:1.85;color:#3A3F47;">这意味着精排模型能感知到用户<span style="color:#1E6FD9;font-weight:700;">最近 10 秒</span>的行为变化。</p>
+
+  <section style="background:#16233A;border-radius:10px;padding:18px;margin:0 0 32px 0;">
+    <p style="margin:0 0 8px 0;font-size:11px;letter-spacing:2px;color:#7E93B8;font-weight:700;">KEY&nbsp;RESULT</p>
+    <p style="margin:0;font-size:15px;line-height:1.85;color:#E6ECF6;">上线后数据：实时特征对 CTR 的提升贡献了 <span style="color:#FF8A8F;font-weight:700;font-size:17px;">40%</span>，是所有优化中增益最大的单点。</p>
+  </section>
+
+  <!-- ===== 四、AB 实验 ===== -->
+  <h2 style="margin:0 0 18px 0;padding:0 0 0 12px;border-left:4px solid #1E6FD9;font-size:20px;line-height:1.4;font-weight:700;color:#16233A;">四、A/B 实验框架</h2>
+
+  <p style="margin:0 0 16px 0;font-size:16px;line-height:1.85;color:#3A3F47;">基于 <span style="font-family:SFMono-Regular,Consolas,Menlo,monospace;font-size:13.5px;background:#F3F5F9;color:#C2185B;padding:2px 6px;border-radius:4px;">MurmurHash</span> 做用户分流，支持多层正交实验：</p>
+
+  <section style="border:1px solid #E9EDF4;border-radius:10px;padding:6px 18px;margin:0 0 18px 0;background:#FFFFFF;">
+    <p style="margin:14px 0;font-size:15px;line-height:1.7;color:#44506A;"><span style="color:#1E6FD9;font-weight:700;">第一层</span>&nbsp;&nbsp;分召回策略</p>
+    <section style="height:1px;background:#EEF1F6;font-size:0;line-height:0;">&nbsp;</section>
+    <p style="margin:14px 0;font-size:15px;line-height:1.7;color:#44506A;"><span style="color:#1E6FD9;font-weight:700;">第二层</span>&nbsp;&nbsp;分精排模型</p>
+    <section style="height:1px;background:#EEF1F6;font-size:0;line-height:0;">&nbsp;</section>
+    <p style="margin:14px 0;font-size:15px;line-height:1.7;color:#44506A;"><span style="color:#1E6FD9;font-weight:700;">第三层</span>&nbsp;&nbsp;分重排规则</p>
+  </section>
+
+  <p style="margin:0 0 18px 0;font-size:16px;line-height:1.85;color:#3A3F47;">每层 20 个桶，可以同时跑 <span style="color:#E5484D;font-weight:700;">60 个实验</span>。实验指标自动计算统计显著性，<span style="font-family:SFMono-Regular,Consolas,Menlo,monospace;font-size:13.5px;background:#F3F5F9;color:#C2185B;padding:2px 6px;border-radius:4px;">P-value &lt; 0.05</span> 才能推全量。</p>
+
+  <!-- ===== 五、踩过的坑 ===== -->
+  <h2 style="margin:0 0 18px 0;padding:0 0 0 12px;border-left:4px solid #1E6FD9;font-size:20px;line-height:1.4;font-weight:700;color:#16233A;">五、踩过的坑</h2>
+
+  <p style="margin:0 0 18px 0;font-size:16px;line-height:1.85;color:#3A3F47;">重构过程中真正让我们熬了夜的，不是架构本身，而是下面这三个问题。</p>
+
+  <!-- 坑 1 -->
+  <section style="background:#FFFBF0;border:1px solid #F5DFB0;border-left:4px solid #EFA93C;border-radius:10px;padding:16px 18px;margin:0 0 14px 0;">
+    <p style="margin:0 0 10px 0;font-size:16px;font-weight:700;color:#A9660C;line-height:1.5;">
+      <span style="display:inline-block;background:#EFA93C;color:#FFFFFF;font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;margin-right:8px;vertical-align:2px;">坑 1</span>特征穿越
+    </p>
+    <p style="margin:0 0 12px 0;font-size:15px;line-height:1.85;color:#6B5330;">训练时不小心用了未来数据，模型离线 AUC 高达 <span style="color:#B8720E;font-weight:700;">0.92</span>，上线后 CTR 反而下降。排查了整整一周，才发现是 label 时间戳有误。</p>
+    <p style="margin:0;padding:10px 12px;background:#FFFFFF;border-radius:6px;font-size:14.5px;line-height:1.75;color:#6B5330;"><span style="color:#B8720E;font-weight:700;">教训</span>&nbsp;&nbsp;特征生成必须严格用 <span style="font-family:SFMono-Regular,Consolas,Menlo,monospace;font-size:13px;background:#FDF3E2;color:#A9660C;padding:1px 5px;border-radius:3px;">point-in-time</span> 快照。</p>
+  </section>
+
+  <!-- 坑 2 -->
+  <section style="background:#FFFBF0;border:1px solid #F5DFB0;border-left:4px solid #EFA93C;border-radius:10px;padding:16px 18px;margin:0 0 14px 0;">
+    <p style="margin:0 0 10px 0;font-size:16px;font-weight:700;color:#A9660C;line-height:1.5;">
+      <span style="display:inline-block;background:#EFA93C;color:#FFFFFF;font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;margin-right:8px;vertical-align:2px;">坑 2</span>冷启动
+    </p>
+    <p style="margin:0 0 12px 0;font-size:15px;line-height:1.85;color:#6B5330;">新用户没有行为历史，向量召回完全失效。</p>
+    <p style="margin:0;padding:10px 12px;background:#FFFFFF;border-radius:6px;font-size:14.5px;line-height:1.75;color:#6B5330;"><span style="color:#B8720E;font-weight:700;">解决方案</span>&nbsp;&nbsp;新用户用热度召回 + 探索性随机，前 20 次交互主要靠 <span style="font-family:SFMono-Regular,Consolas,Menlo,monospace;font-size:13px;background:#FDF3E2;color:#A9660C;padding:1px 5px;border-radius:3px;">Bandit</span> 算法探索兴趣。</p>
+  </section>
+
+  <!-- 坑 3 -->
+  <section style="background:#FFFBF0;border:1px solid #F5DFB0;border-left:4px solid #EFA93C;border-radius:10px;padding:16px 18px;margin:0 0 32px 0;">
+    <p style="margin:0 0 10px 0;font-size:16px;font-weight:700;color:#A9660C;line-height:1.5;">
+      <span style="display:inline-block;background:#EFA93C;color:#FFFFFF;font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;margin-right:8px;vertical-align:2px;">坑 3</span>线上线下不一致
+    </p>
+    <p style="margin:0 0 12px 0;font-size:15px;line-height:1.85;color:#6B5330;">离线 AUC 提升了 <span style="color:#B8720E;font-weight:700;">3%</span>，上线后 CTR 只提升了 <span style="color:#B8720E;font-weight:700;">0.5%</span>。原因是离线评测用的全量日志存在位置偏差。</p>
+    <p style="margin:0;padding:10px 12px;background:#FFFFFF;border-radius:6px;font-size:14.5px;line-height:1.75;color:#6B5330;"><span style="color:#B8720E;font-weight:700;">解决方案</span>&nbsp;&nbsp;改用 <span style="font-family:SFMono-Regular,Consolas,Menlo,monospace;font-size:13px;background:#FDF3E2;color:#A9660C;padding:1px 5px;border-radius:3px;">IPW</span>（逆倾向加权）做离线评测，一致性好了很多。</p>
+  </section>
+
+  <!-- ===== 六、成果 ===== -->
+  <h2 style="margin:0 0 18px 0;padding:0 0 0 12px;border-left:4px solid #1E6FD9;font-size:20px;line-height:1.4;font-weight:700;color:#16233A;">六、上线一个月后的成绩</h2>
+
+  <table style="width:100%;border-collapse:collapse;margin:0 0 18px 0;font-size:13px;table-layout:fixed;" cellspacing="0" cellpadding="0">
+    <thead>
+      <tr>
+        <th style="width:34%;background:#16233A;color:#FFFFFF;font-weight:600;padding:10px 6px;text-align:left;border:1px solid #16233A;font-size:13px;">指标</th>
+        <th style="width:20%;background:#16233A;color:#FFFFFF;font-weight:600;padding:10px 2px;text-align:center;border:1px solid #16233A;font-size:13px;">重构前</th>
+        <th style="width:22%;background:#16233A;color:#FFFFFF;font-weight:600;padding:10px 2px;text-align:center;border:1px solid #16233A;font-size:13px;">重构后</th>
+        <th style="width:24%;background:#16233A;color:#FFFFFF;font-weight:600;padding:10px 2px;text-align:center;border:1px solid #16233A;font-size:13px;">提升</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="padding:11px 6px;border:1px solid #E3E8F0;color:#44506A;line-height:1.6;vertical-align:middle;">推荐点击率</td>
+        <td style="padding:11px 2px;border:1px solid #E3E8F0;color:#8A94A6;text-align:center;vertical-align:middle;white-space:nowrap;">2.8%</td>
+        <td style="padding:11px 2px;border:1px solid #E3E8F0;color:#16233A;font-weight:700;text-align:center;vertical-align:middle;white-space:nowrap;">8.5%</td>
+        <td style="padding:11px 2px;border:1px solid #E3E8F0;color:#E5484D;font-weight:700;text-align:center;vertical-align:middle;white-space:nowrap;">+203%</td>
+      </tr>
+      <tr>
+        <td style="padding:11px 6px;border:1px solid #E3E8F0;color:#44506A;line-height:1.6;vertical-align:middle;background:#FAFBFD;">人均推荐消费时长</td>
+        <td style="padding:11px 2px;border:1px solid #E3E8F0;color:#8A94A6;text-align:center;vertical-align:middle;background:#FAFBFD;white-space:nowrap;">4.2 分钟</td>
+        <td style="padding:11px 2px;border:1px solid #E3E8F0;color:#16233A;font-weight:700;text-align:center;vertical-align:middle;background:#FAFBFD;white-space:nowrap;">9.8 分钟</td>
+        <td style="padding:11px 2px;border:1px solid #E3E8F0;color:#E5484D;font-weight:700;text-align:center;vertical-align:middle;background:#FAFBFD;white-space:nowrap;">+133%</td>
+      </tr>
+      <tr>
+        <td style="padding:11px 6px;border:1px solid #E3E8F0;color:#44506A;line-height:1.6;vertical-align:middle;">推荐付费转化</td>
+        <td style="padding:11px 2px;border:1px solid #E3E8F0;color:#8A94A6;text-align:center;vertical-align:middle;white-space:nowrap;">1.2%</td>
+        <td style="padding:11px 2px;border:1px solid #E3E8F0;color:#16233A;font-weight:700;text-align:center;vertical-align:middle;white-space:nowrap;">3.1%</td>
+        <td style="padding:11px 2px;border:1px solid #E3E8F0;color:#E5484D;font-weight:700;text-align:center;vertical-align:middle;white-space:nowrap;">+158%</td>
+      </tr>
+      <tr>
+        <td style="padding:11px 6px;border:1px solid #E3E8F0;color:#44506A;line-height:1.6;vertical-align:middle;background:#FAFBFD;">模型迭代周期</td>
+        <td style="padding:11px 2px;border:1px solid #E3E8F0;color:#8A94A6;text-align:center;vertical-align:middle;background:#FAFBFD;white-space:nowrap;">2 周</td>
+        <td style="padding:11px 2px;border:1px solid #E3E8F0;color:#16233A;font-weight:700;text-align:center;vertical-align:middle;background:#FAFBFD;white-space:nowrap;">2 天</td>
+        <td style="padding:11px 2px;border:1px solid #E3E8F0;color:#E5484D;font-weight:700;text-align:center;vertical-align:middle;background:#FAFBFD;white-space:nowrap;">-86%</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p style="margin:0 0 32px 0;font-size:16px;line-height:1.85;color:#3A3F47;">回头看，这三个月真正的收益不是那 5.7 个点的 CTR，而是一套<span style="color:#1E6FD9;font-weight:700;">可以持续迭代的工程底座</span>：特征能一天上线，模型能两天验证，改动有实验兜底。</p>
+
+  <!-- ===== 结尾 ===== -->
+  <section style="height:1px;background:#E8EBF0;margin:0 0 22px 0;font-size:0;line-height:0;">&nbsp;</section>
+
+  <section style="background:#F5F8FE;border-radius:10px;padding:18px;margin:0 0 22px 0;text-align:center;">
+    <p style="margin:0;font-size:15px;line-height:1.85;color:#44506A;">推荐系统没有银弹，只有一层层逼近的工程取舍。<br>如果你也在做类似的重构，欢迎在评论区聊聊你们踩过的坑。</p>
+  </section>
+
+  <p style="margin:0;font-size:13px;line-height:1.8;color:#8A94A6;text-align:center;">作者：推荐系统团队&nbsp;&nbsp;|&nbsp;&nbsp;编辑：技术周刊组</p>
+
+</section>
+
+</body>
+</html>
